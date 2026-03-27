@@ -21,6 +21,9 @@ app.use((_req, res) => {
 });
 
 app.listen(port, () => {
-  console.info("Webhook listening on http://localhost:%s", port);
-  console.info("POST http://localhost:%s/webhooks/driver-notifications", port);
+  const base = `http://localhost:${port}`;
+  console.info("Webhook listening on %s", base);
+  console.info("POST %s/webhooks/driver-notifications (any event)", base);
+  console.info("POST %s/webhooks/bubbles/bid-accepted", base);
+  console.info("POST %s/webhooks/bubbles/bid-request-updates", base);
 });
