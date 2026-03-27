@@ -69,7 +69,7 @@ export async function sendDriverPush(tokens, data, notification) {
     Object.entries(data).map(([k, v]) => [k, v == null ? "" : String(v)])
   );
 
-  const androidChannelId = process.env.FCM_ANDROID_CHANNEL_ID || "driver_default";
+  const androidChannelId = process.env.FCM_ANDROID_CHANNEL_ID?.trim();
 
   const chunkSize = 500;
   let success = 0;
@@ -77,6 +77,13 @@ export async function sendDriverPush(tokens, data, notification) {
 
   for (let i = 0; i < unique.length; i += chunkSize) {
     const chunk = unique.slice(i, i + chunkSize);
+    const androidNotification = {
+      sound: "default",
+    };
+    if (androidChannelId) {
+      androidNotification.channelId = androidChannelId;
+    }
+
     const res = await messaging.sendEachForMulticast({
       tokens: chunk,
       data: stringData,
@@ -86,10 +93,7 @@ export async function sendDriverPush(tokens, data, notification) {
       },
       android: {
         priority: "high",
-        notification: {
-          channelId: androidChannelId,
-          sound: "default",
-        },
+        notification: androidNotification,
       },
       apns: {
         payload: {
