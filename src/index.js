@@ -1,6 +1,7 @@
 import "dotenv/config";
 import express from "express";
 import helmet from "helmet";
+import { logisticsApiRouter } from "./routes/logisticsApi.js";
 import { webhookRouter } from "./routes/webhook.js";
 
 const app = express();
@@ -15,6 +16,7 @@ app.get("/health", (_req, res) => {
 });
 
 app.use("/webhooks", webhookRouter);
+app.use("/api/v1", logisticsApiRouter);
 
 app.use((_req, res) => {
   res.status(404).json({ error: "not_found" });
@@ -26,4 +28,5 @@ app.listen(port, () => {
   console.info("POST %s/webhooks/driver-notifications (any event)", base);
   console.info("POST %s/webhooks/bubbles/bid-accepted", base);
   console.info("POST %s/webhooks/bubbles/bid-request-updates", base);
+  console.info("POST %s/api/v1/drivers/fcm-token (LOGISTICS_API_KEY)", base);
 });

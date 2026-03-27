@@ -47,11 +47,14 @@ export function isFcmConfigured() {
 }
 
 /**
+ * Sends display notification (tray) + data payload for the Flutter app to handle taps / routing.
+ *
  * @param {string[]} tokens
  * @param {Record<string, string>} data - FCM data map (string values)
+ * @param {{ title: string; body: string }} notification - visible title/body in notification shade
  * @returns {Promise<{ success: number; failure: number }>}
  */
-export async function sendDataToTokens(tokens, data) {
+export async function sendDriverPush(tokens, data, notification) {
   tryInit();
   if (!configured) {
     console.warn("[fcm] skip send — not configured | tokenCount=%s", tokens.length);
@@ -66,6 +69,8 @@ export async function sendDataToTokens(tokens, data) {
     Object.entries(data).map(([k, v]) => [k, v == null ? "" : String(v)])
   );
 
+  const androidChannelId = process.env.FCM_ANDROID_CHANNEL_ID || "driver_default";
+
   const chunkSize = 500;
   let success = 0;
   let failure = 0;
@@ -75,6 +80,24 @@ export async function sendDataToTokens(tokens, data) {
     const res = await messaging.sendEachForMulticast({
       tokens: chunk,
       data: stringData,
+      notification: {
+        title: notification.title,
+        body: notification.body,
+      },
+      android: {
+        priority: "high",
+        notification: {
+          channelId: androidChannelId,
+          sound: "default",
+        },
+      },
+      apns: {
+        payload: {
+          aps: {
+            sound: "default",
+          },
+        },
+      },
     });
     success += res.successCount;
     failure += res.failureCount;

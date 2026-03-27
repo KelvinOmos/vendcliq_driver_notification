@@ -1,9 +1,4 @@
-/**
- * Call your logistics API: partner UUIDs → FCM registration tokens.
- * POST body: { partnerIds: string[] }
- * Response JSON: { tokensByPartnerId: { "<uuid>": "<fcmToken>", ... } }
- * Optional: { tokens: ["fcm1","fcm2"] } aligned with partnerIds order (if same length).
- */
+import * as store from "./logisticsStore.js";
 
 async function postJson(url, body) {
   const secret = process.env.INTERNAL_API_SECRET ?? process.env.TOKEN_LOOKUP_SECRET ?? "";
@@ -23,28 +18,15 @@ async function postJson(url, body) {
   return res.json();
 }
 
-/**
- * @param {string[]} partnerIds
- * @returns {Promise<string[]>} FCM tokens (order preserved, duplicates dropped for send)
- */
-export async function getFcmTokensForPartnerIds(partnerIds) {
-  const ids = [...new Set(partnerIds.filter(Boolean))];
-  if (ids.length === 0) return [];
-
-  const url = process.env.TOKEN_LOOKUP_URL;
-  if (!url) {
-    console.warn("[tokens] TOKEN_LOOKUP_URL not set — cannot resolve FCM tokens");
-    return [];
-  }
-
-  const json = await postJson(url, { partnerIds: ids });
+async function httpGetFcmTokens(url, partnerIds) {
+  const json = await postJson(url, { partnerIds });
 
   if (json.tokensByPartnerId && typeof json.tokensByPartnerId === "object") {
     const map = json.tokensByPartnerId;
-    return ids.map((id) => map[id]).filter(Boolean);
+    return partnerIds.map((id) => map[id]).filter(Boolean);
   }
 
-  if (Array.isArray(json.tokens) && json.tokens.length === ids.length) {
+  if (Array.isArray(json.tokens) && json.tokens.length === partnerIds.length) {
     return json.tokens.filter(Boolean);
   }
 
@@ -53,19 +35,37 @@ export async function getFcmTokensForPartnerIds(partnerIds) {
 }
 
 /**
- * Who should get "bid request closed" for this id (partner UUIDs).
- * POST body: { bidRequestId: string }
- * Response JSON: { partnerIds: string[] }
+ * Partner UUIDs → FCM tokens.
+ * If `TOKEN_LOOKUP_URL` is set (split deployment), call remote API; else this logistics API’s store.
+ *
+ * @param {string[]} partnerIds
+ * @returns {Promise<string[]>}
+ */
+export async function getFcmTokensForPartnerIds(partnerIds) {
+  const ids = [...new Set(partnerIds.filter(Boolean))];
+  if (ids.length === 0) return [];
+
+  const url = process.env.TOKEN_LOOKUP_URL;
+  if (url) {
+    return httpGetFcmTokens(url, ids);
+  }
+
+  return store.getFcmTokensForPartnerIds(ids);
+}
+
+/**
+ * bidRequestId → partner UUIDs for CLOSED broadcast.
+ * If `CLOSED_BID_PARTNERS_LOOKUP_URL` is set, HTTP; else in-process store.
  */
 export async function getPartnerIdsForClosedBidRequest(bidRequestId) {
   if (!bidRequestId) return [];
 
   const url = process.env.CLOSED_BID_PARTNERS_LOOKUP_URL;
-  if (!url) {
-    return [];
+  if (url) {
+    const json = await postJson(url, { bidRequestId });
+    const raw = json.partnerIds;
+    return Array.isArray(raw) ? raw.filter((x) => typeof x === "string") : [];
   }
 
-  const json = await postJson(url, { bidRequestId });
-  const ids = json.partnerIds;
-  return Array.isArray(ids) ? ids.filter((x) => typeof x === "string") : [];
+  return store.getPartnerIdsForClosedBidRequest(bidRequestId);
 }

@@ -1,8 +1,9 @@
-import { sendDataToTokens } from "./fcm.js";
+import { sendDriverPush } from "./fcm.js";
+import { recordPartnersEligibleForBidRequest } from "./logisticsStore.js";
 import { getFcmTokensForPartnerIds, getPartnerIdsForClosedBidRequest } from "./tokenLookup.js";
 
 /**
- * Resolve recipients and send FCM (or enqueue). Configure TOKEN_LOOKUP_URL + Firebase.
+ * Resolve recipients and send FCM. This process is the logistics API: store + webhooks + optional HTTP lookups.
  *
  * @param {object} body - Parsed JSON body from POST webhooks
  * @returns {Promise<void>}
@@ -30,6 +31,50 @@ export function buildFcmData(body) {
 }
 
 /**
+ * Title/body shown in the device notification tray (FCM `notification` payload).
+ * `data` still carries ids for Flutter routing when the user taps.
+ */
+export function buildFcmNotification(body) {
+  const eventType = normalizeEventType(body);
+  const custom = typeof body.content === "string" && body.content.trim() ? body.content.trim() : null;
+
+  if (eventType === "bubbles.bidaccepted") {
+    const amt = body.amount != null ? String(body.amount) : "";
+    return {
+      title: "Bid accepted",
+      body: custom ?? (amt ? `Your bid was accepted. Amount: ${amt}` : "Your bid was accepted."),
+    };
+  }
+
+  if (eventType === "bubbles.updates") {
+    const status = body.status ? String(body.status) : "";
+    if (status.toUpperCase() === "CLOSED") {
+      return {
+        title: "Bid request closed",
+        body: custom ?? "This request is no longer open for bids.",
+      };
+    }
+    return {
+      title: "Bid update",
+      body: custom ?? (status ? `Status: ${status}` : "There is an update to a bid request."),
+    };
+  }
+
+  if (eventType === "bubbles.bidcreate") {
+    const name = body.item?.product?.name;
+    return {
+      title: "New delivery request",
+      body: custom ?? (name ? `New request: ${name}` : "You have a new bid request."),
+    };
+  }
+
+  return {
+    title: "Driver update",
+    body: custom ?? (eventType ? eventType.replace(/^.*\./, "").replace(/_/g, " ") : "You have a new notification."),
+  };
+}
+
+/**
  * Drivers who should be notified that a bid request is closed (everyone who saw the request).
  * Implement: query by bidRequestId → partner/device ids or FCM tokens.
  *
@@ -41,7 +86,7 @@ export async function resolveTargetsForClosedBidRequest(bidRequestId) {
   const partnerIds = await getPartnerIdsForClosedBidRequest(bidRequestId);
   if (partnerIds.length === 0) {
     console.warn(
-      "[notify] CLOSED broadcast — no partnerIds (set CLOSED_BID_PARTNERS_LOOKUP_URL on logistics API) bidRequestId=%s",
+      "[notify] CLOSED broadcast — no partnerIds for bidRequestId=%s (ensure bidcreate was processed, LOGISTICS_STORE_MODE=memory, or implement DB + CLOSED_BID_PARTNERS_LOOKUP_URL)",
       bidRequestId
     );
   }
@@ -65,7 +110,8 @@ async function sendToTargets(targetIds, body) {
     return;
   }
 
-  const { success, failure } = await sendDataToTokens(tokens, data);
+  const notification = buildFcmNotification(body);
+  const { success, failure } = await sendDriverPush(tokens, data, notification);
   console.info(
     "[notify] fcm | partners=%s tokens=%s ok=%s fail=%s",
     targetIds.length,
@@ -127,6 +173,14 @@ export async function deliverDriverNotification(body, opts = {}) {
   }
 
   switch (eventType) {
+    case "bubbles.bidcreate": {
+      const bidRequestId =
+        body.bidRequestId ?? body.metadata?.originalData?.bidRequestId ?? body.metadata?.trackingId;
+      const devices = Array.isArray(body.devices) ? body.devices : [];
+      await recordPartnersEligibleForBidRequest(bidRequestId, devices);
+      await handleGeneric(body);
+      break;
+    }
     case "bubbles.bidaccepted":
       await handleBidAccepted(body);
       break;
