@@ -15,6 +15,22 @@ app.get("/health", (_req, res) => {
   res.status(200).json({ status: "ok" });
 });
 
+app.get("/", (_req, res) => {
+  res.status(200).json({
+    service: "vendcliq-driver-notification",
+    status: "ok",
+    endpoints: {
+      health: "GET /health",
+      webhooks: {
+        anyEvent: "POST /webhooks/driver-notifications",
+        bidAccepted: "POST /webhooks/bubbles/bid-accepted",
+        bidRequestUpdates: "POST /webhooks/bubbles/bid-request-updates",
+      },
+      devices: "POST /api/v1/drivers/fcm-token",
+    },
+  });
+});
+
 app.use("/webhooks", webhookRouter);
 app.use("/api/v1", logisticsApiRouter);
 
