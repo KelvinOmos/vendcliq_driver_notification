@@ -1,14 +1,12 @@
 import { Router } from "express";
+import { logEvent } from "../fileLog.js";
 import { webhookAuth } from "../middleware/auth.js";
 import { deliverDriverNotification, normalizeEventType } from "../notify.js";
 
 const router = Router();
 
-function webhookError(err, res) {
+function webhookError(err, res, meta = {}) {
   const status = err.status && Number.isInteger(err.status) ? err.status : 500;
-  if (status >= 500) {
-    console.error("[webhook] deliver failed", err);
-  }
   const code =
     err.message === "missing_recipient"
       ? "missing_recipient"
@@ -17,6 +15,15 @@ function webhookError(err, res) {
         : err.message === "event_type_mismatch"
           ? "event_type_mismatch"
           : "delivery_failed";
+  if (status >= 500) {
+    console.error("[webhook] deliver failed", err);
+  }
+  logEvent(status >= 500 ? "error" : "warn", "webhook_error", {
+    ...meta,
+    status,
+    code,
+    message: err.message,
+  });
   if (status === 400) {
     return res.status(400).json({ error: code });
   }
@@ -25,20 +32,24 @@ function webhookError(err, res) {
 
 async function postWebhook(req, res, options = {}) {
   const body = req.body;
+  const url = req.originalUrl ?? req.url;
   if (!body || typeof body !== "object") {
+    logEvent("warn", "webhook_invalid_json", { url });
     return res.status(400).json({ error: "invalid_json" });
   }
 
   const eventType = normalizeEventType(body);
   if (!eventType) {
+    logEvent("warn", "webhook_missing_event_type", { url });
     return res.status(400).json({ error: "missing_event_type" });
   }
 
   try {
     await deliverDriverNotification(body, options);
+    logEvent("info", "webhook_ok", { url, eventType });
     return res.status(204).send();
   } catch (err) {
-    return webhookError(err, res);
+    return webhookError(err, res, { url, eventType });
   }
 }
 

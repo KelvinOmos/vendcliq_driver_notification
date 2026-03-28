@@ -1,6 +1,8 @@
 import "dotenv/config";
 import express from "express";
 import helmet from "helmet";
+import morgan from "morgan";
+import { createAccessLogStream, isFileLoggingEnabled, logEvent } from "./fileLog.js";
 import { logisticsApiRouter } from "./routes/logisticsApi.js";
 import { webhookRouter } from "./routes/webhook.js";
 
@@ -10,6 +12,11 @@ const port = Number(process.env.PORT) || 3000;
 app.disable("x-powered-by");
 app.use(helmet());
 app.use(express.json({ limit: "512kb" }));
+
+const accessStream = createAccessLogStream();
+if (accessStream) {
+  app.use(morgan("combined", { stream: accessStream }));
+}
 
 app.get("/health", (_req, res) => {
   res.status(200).json({ status: "ok" });
@@ -39,6 +46,9 @@ app.use((_req, res) => {
 });
 
 app.listen(port, () => {
+  if (isFileLoggingEnabled()) {
+    logEvent("info", "server_start", { port, fileLogging: true });
+  }
   const base = `http://localhost:${port}`;
   console.info("Webhook listening on %s", base);
   console.info("POST %s/webhooks/driver-notifications (any event)", base);

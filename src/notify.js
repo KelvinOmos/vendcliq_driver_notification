@@ -1,3 +1,4 @@
+import { logEvent } from "./fileLog.js";
 import { sendDriverPush } from "./fcm.js";
 import { recordPartnersEligibleForBidRequest } from "./logisticsStore.js";
 import { getFcmTokensForPartnerIds, getPartnerIdsForClosedBidRequest } from "./tokenLookup.js";
@@ -97,6 +98,7 @@ async function sendToTargets(targetIds, body) {
   const data = buildFcmData(body);
   if (targetIds.length === 0) {
     console.warn("[notify] no targets — skipped send | data=%s", JSON.stringify(data));
+    logEvent("warn", "fcm_skipped_no_targets", { eventType: data.eventType, data });
     return;
   }
 
@@ -107,6 +109,11 @@ async function sendToTargets(targetIds, body) {
       JSON.stringify(targetIds),
       JSON.stringify(data)
     );
+    logEvent("warn", "fcm_skipped_no_tokens", {
+      eventType: data.eventType,
+      partnerCount: targetIds.length,
+      partnerIds: targetIds,
+    });
     return;
   }
 
@@ -119,6 +126,13 @@ async function sendToTargets(targetIds, body) {
     success,
     failure
   );
+  logEvent("info", "fcm_send", {
+    eventType: data.eventType,
+    partnerCount: targetIds.length,
+    tokenCount: tokens.length,
+    success,
+    failure,
+  });
 }
 
 async function handleBidAccepted(body) {
