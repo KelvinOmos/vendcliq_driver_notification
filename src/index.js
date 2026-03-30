@@ -46,6 +46,11 @@ app.use((_req, res) => {
 });
 
 app.listen(port, () => {
+  console.info(
+    "[boot] env present: LOGISTICS_API_KEY=%s WEBHOOK_SECRET=%s",
+    Boolean(process.env.LOGISTICS_API_KEY),
+    Boolean(process.env.WEBHOOK_SECRET)
+  );
   if (isFileLoggingEnabled()) {
     logEvent("info", "server_start", { port, fileLogging: true });
   }
