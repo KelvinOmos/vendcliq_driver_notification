@@ -14,12 +14,79 @@ export function normalizeEventType(body) {
   return typeof t === "string" ? t : null;
 }
 
+/** Same lifecycle as bubbles.bidcreate (cohort + “new request” notification). */
+function isBidCreateEventType(t) {
+  return t === "bubbles.bidcreate" || t === "bubbles.bidrequestcreated";
+}
+
 function pick(body, key) {
   const top = body?.[key];
   if (top !== undefined && top !== null && top !== "") return top;
   const nested = body?.data?.[key];
   if (nested !== undefined && nested !== null && nested !== "") return nested;
   return undefined;
+}
+
+/**
+ * bidRequestId from body/data or bubbles-style metadata (originalData, trackingId).
+ */
+function pickBidRequestId(body) {
+  const v =
+    pick(body, "bidRequestId") ??
+    pick(body, "bid_request_id") ??
+    body?.metadata?.originalData?.bidRequestId ??
+    body?.metadata?.originalData?.bid_request_id ??
+    body?.metadata?.trackingId;
+  if (v === undefined || v === null || v === "") return undefined;
+  return String(v).trim();
+}
+
+/** Partner/driver id arrays from top-level or `data` (notification-service shapes). */
+function collectArrayPartnerIds(body) {
+  const out = [];
+  const add = (arr) => {
+    if (!Array.isArray(arr)) return;
+    for (const x of arr) {
+      if (x !== undefined && x !== null && x !== "") out.push(String(x).trim());
+    }
+  };
+  add(body?.devices);
+  const d = body?.data;
+  if (d && typeof d === "object") {
+    add(d.devices);
+    add(d.partnerIds);
+    add(d.driverIds);
+    add(d.driverPartnerIds);
+    add(d.losingPartners);
+  }
+  return out;
+}
+
+function isRecipientAll(value) {
+  if (value === undefined || value === null || value === "") return false;
+  return String(value).trim().toLowerCase() === "all";
+}
+
+function resolveGenericTargets(body) {
+  const targets = collectArrayPartnerIds(body);
+  const recipient = pick(body, "recipient");
+  const partnerId = pick(body, "partnerId");
+  const userId = pick(body, "userId");
+  if (recipient && !isRecipientAll(recipient)) {
+    targets.push(String(recipient).trim());
+  }
+  if (
+    partnerId !== undefined &&
+    partnerId !== null &&
+    partnerId !== "" &&
+    String(partnerId).trim() !== String(recipient ?? "").trim()
+  ) {
+    targets.push(String(partnerId).trim());
+  }
+  if (userId !== undefined && userId !== null && userId !== "") {
+    targets.push(String(userId).trim());
+  }
+  return [...new Set(targets.filter(Boolean))];
 }
 
 /**
@@ -32,7 +99,7 @@ export function buildFcmData(body) {
     eventType: eventType ?? "",
   };
   const bidId = pick(body, "bidId");
-  const bidRequestId = pick(body, "bidRequestId");
+  const bidRequestId = pickBidRequestId(body);
   const status = pick(body, "status");
   const amount = pick(body, "amount");
   const tripId = pick(body, "tripId");
@@ -92,7 +159,7 @@ export function buildFcmNotification(body) {
     };
   }
 
-  if (eventType === "bubbles.bidcreate") {
+  if (isBidCreateEventType(eventType)) {
     const name = body.item?.product?.name ?? body.data?.item?.product?.name;
     return {
       title: "New delivery request",
@@ -176,34 +243,30 @@ async function sendToTargets(targetIds, body) {
 
 async function handleBidAccepted(body) {
   const recipient = pick(body, "recipient") || pick(body, "partnerId");
-  if (!recipient || recipient === "all") {
+  if (!recipient || isRecipientAll(recipient)) {
     const err = new Error("missing_recipient");
     err.status = 400;
     throw err;
   }
-  await sendToTargets([recipient], body);
+  await sendToTargets([String(recipient).trim()], body);
 }
 
 async function handleBidRequestUpdate(body) {
-  const bidRequestId =
-    pick(body, "bidRequestId") ?? body.metadata?.originalData?.bidRequestId ?? body.metadata?.trackingId;
+  const bidRequestId = pickBidRequestId(body);
+  const recipientRaw = pick(body, "recipient");
 
-  if (pick(body, "recipient") === "all") {
+  if (isRecipientAll(recipientRaw)) {
     const targets = await resolveTargetsForClosedBidRequest(bidRequestId);
     await sendToTargets(targets, body);
     return;
   }
 
-  if (pick(body, "recipient") && pick(body, "recipient") !== "all") {
-    await sendToTargets([pick(body, "recipient")], body);
+  if (recipientRaw && !isRecipientAll(recipientRaw)) {
+    await sendToTargets([String(recipientRaw).trim()], body);
     return;
   }
 
-  const fromDevices = Array.isArray(body.devices)
-    ? body.devices.filter(Boolean)
-    : Array.isArray(body.data?.devices)
-      ? body.data.devices.filter(Boolean)
-      : [];
+  const fromDevices = collectArrayPartnerIds(body);
   if (fromDevices.length > 0) {
     await sendToTargets([...new Set(fromDevices)], body);
     return;
@@ -230,14 +293,10 @@ export async function deliverDriverNotification(body, opts = {}) {
   }
 
   switch (eventType) {
-    case "bubbles.bidcreate": {
-      const bidRequestId =
-        pick(body, "bidRequestId") ?? body.metadata?.originalData?.bidRequestId ?? body.metadata?.trackingId;
-      const devices = Array.isArray(body.devices)
-        ? body.devices
-        : Array.isArray(body.data?.devices)
-          ? body.data.devices
-          : [];
+    case "bubbles.bidcreate":
+    case "bubbles.bidrequestcreated": {
+      const bidRequestId = pickBidRequestId(body);
+      const devices = resolveGenericTargets(body);
       await recordPartnersEligibleForBidRequest(bidRequestId, devices);
       await handleGeneric(body);
       break;
@@ -256,14 +315,7 @@ export async function deliverDriverNotification(body, opts = {}) {
 
 async function handleGeneric(body) {
   const eventType = normalizeEventType(body);
-  const targets = [];
-  const recipient = pick(body, "recipient");
-  const partnerId = pick(body, "partnerId");
-  if (recipient && recipient !== "all") targets.push(recipient);
-  if (Array.isArray(body.devices)) targets.push(...body.devices);
-  if (Array.isArray(body.data?.devices)) targets.push(...body.data.devices);
-  if (partnerId && partnerId !== recipient) targets.push(partnerId);
-  const unique = [...new Set(targets.filter(Boolean))];
+  const unique = resolveGenericTargets(body);
   console.info("[notify] generic event=%s targets=%s", eventType, JSON.stringify(unique));
   await sendToTargets(unique, body);
 }
