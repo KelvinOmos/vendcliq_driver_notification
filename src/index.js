@@ -45,7 +45,8 @@ app.use((_req, res) => {
   res.status(404).json({ error: "not_found" });
 });
 
-app.listen(port, () => {
+// Bind all interfaces so Render/proxy can reach the process (localhost-only causes 502).
+app.listen(port, "0.0.0.0", () => {
   console.info(
     "[boot] env present: LOGISTICS_API_KEY=%s WEBHOOK_SECRET=%s",
     Boolean(process.env.LOGISTICS_API_KEY),
