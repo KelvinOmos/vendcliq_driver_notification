@@ -35,6 +35,12 @@ app.get("/", (_req, res) => {
       },
       devices: "POST /api/v1/drivers/fcm-token",
     },
+    integrations: {
+      thisRepo:
+        "Receives webhooks and sends FCM. Configure Firebase + FCM_DRIVER_TOPIC on Render. Optional FCM_TOPIC_DEFAULT_FOR_BIDCREATE.",
+      otherCodebases:
+        "Driver Flutter app: register FCM token to this service + subscribeToTopic. Logistics/Bubbles (wherever POSTs webhooks): no change if you use broadcastToTopic or server default; otherwise add broadcastToTopic to JSON.",
+    },
   });
 });
 

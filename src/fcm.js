@@ -114,3 +114,63 @@ export async function sendDriverPush(tokens, data, notification) {
 
   return { success, failure };
 }
+
+/**
+ * Send one message to an FCM topic (all app instances subscribed to that topic).
+ * Flutter: `FirebaseMessaging.instance.subscribeToTopic('<same-name>')`.
+ *
+ * @param {string} topic - e.g. `all_drivers` (FCM: letters, numbers, -_.~% only)
+ * @param {Record<string, string>} data
+ * @param {{ title: string; body: string }} notification
+ * @returns {Promise<{ success: number; failure: number }>}
+ */
+export async function sendDriverPushToTopic(topic, data, notification) {
+  tryInit();
+  if (!configured) {
+    console.warn("[fcm] skip topic send — not configured | topic=%s", topic);
+    return { success: 0, failure: 1 };
+  }
+
+  const t = String(topic ?? "").trim();
+  if (!t) {
+    console.warn("[fcm] skip topic send — empty topic");
+    return { success: 0, failure: 0 };
+  }
+
+  const messaging = admin.messaging();
+  const stringData = Object.fromEntries(
+    Object.entries(data).map(([k, v]) => [k, v == null ? "" : String(v)])
+  );
+
+  const androidChannelId = process.env.FCM_ANDROID_CHANNEL_ID?.trim();
+  const androidNotification = { sound: "default" };
+  if (androidChannelId) {
+    androidNotification.channelId = androidChannelId;
+  }
+
+  try {
+    await messaging.send({
+      topic: t,
+      data: stringData,
+      notification: {
+        title: notification.title,
+        body: notification.body,
+      },
+      android: {
+        priority: "high",
+        notification: androidNotification,
+      },
+      apns: {
+        payload: {
+          aps: {
+            sound: "default",
+          },
+        },
+      },
+    });
+    return { success: 1, failure: 0 };
+  } catch (e) {
+    console.error("[fcm] topic send failed | topic=%s | %s", t, e?.message ?? e);
+    return { success: 0, failure: 1 };
+  }
+}

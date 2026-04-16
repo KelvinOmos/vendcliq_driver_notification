@@ -1,5 +1,5 @@
 import { logEvent } from "./fileLog.js";
-import { sendDriverPush } from "./fcm.js";
+import { sendDriverPush, sendDriverPushToTopic } from "./fcm.js";
 import { recordPartnersEligibleForBidRequest } from "./logisticsStore.js";
 import { getFcmTokensForPartnerIds, getPartnerIdsForClosedBidRequest } from "./tokenLookup.js";
 
@@ -65,6 +65,77 @@ function collectArrayPartnerIds(body) {
 function isRecipientAll(value) {
   if (value === undefined || value === null || value === "") return false;
   return String(value).trim().toLowerCase() === "all";
+}
+
+/** Topic name for “all drivers” broadcasts (set `FCM_DRIVER_TOPIC` on the server). */
+function driverBroadcastTopicFromEnv() {
+  return process.env.FCM_DRIVER_TOPIC?.trim() || null;
+}
+
+function broadcastToTopicExplicitFalse(body) {
+  const v = pick(body, "broadcastToTopic") ?? body?.data?.broadcastToTopic;
+  if (v === false || v === 0) return true;
+  if (typeof v === "string" && ["false", "0", "no"].includes(v.trim().toLowerCase())) return true;
+  return false;
+}
+
+function topicDefaultForBidcreateFromEnv() {
+  const v = process.env.FCM_TOPIC_DEFAULT_FOR_BIDCREATE;
+  return v === "true" || v === "1";
+}
+
+/**
+ * Send via FCM topic (`FCM_DRIVER_TOPIC`) instead of per-token multicast when:
+ * - body or `data` has `broadcastToTopic` true | "true" | 1, or
+ * - `bubbles.bidcreate` / `bubbles.bidrequestcreated` with `recipient: "all"` and `FCM_DRIVER_TOPIC` is set
+ *   (same intent as “every driver”; avoids empty target list when there is no `devices` array), or
+ * - `FCM_TOPIC_DEFAULT_FOR_BIDCREATE` is true and event is bidcreate / bidrequestcreated.
+ *
+ * `bubbles.updates` + `recipient: "all"` still defaults to **cohort** (stored partners), not topic,
+ * unless you set `broadcastToTopic: true` on that webhook.
+ *
+ * Opt out per request: `broadcastToTopic: false`.
+ */
+function shouldUseDriverTopicBroadcast(body) {
+  if (broadcastToTopicExplicitFalse(body)) return false;
+  const v = pick(body, "broadcastToTopic") ?? body?.data?.broadcastToTopic;
+  if (v === true || v === 1) return true;
+  if (typeof v === "string" && ["true", "1", "yes"].includes(v.trim().toLowerCase())) return true;
+
+  const t = normalizeEventType(body);
+  if (
+    isBidCreateEventType(t) &&
+    isRecipientAll(pick(body, "recipient")) &&
+    driverBroadcastTopicFromEnv()
+  ) {
+    return true;
+  }
+
+  if (topicDefaultForBidcreateFromEnv() && isBidCreateEventType(t)) return true;
+  return false;
+}
+
+async function sendToDriverTopic(body) {
+  const topic = driverBroadcastTopicFromEnv();
+  const data = buildFcmData(body);
+  if (!topic) {
+    console.warn(
+      "[notify] topic send requested but FCM_DRIVER_TOPIC env is empty — skipped | eventType=%s",
+      data.eventType
+    );
+    logEvent("warn", "fcm_topic_skipped_no_env", { eventType: data.eventType, data });
+    return;
+  }
+
+  const notification = buildFcmNotification(body);
+  const { success, failure } = await sendDriverPushToTopic(topic, data, notification);
+  console.info("[notify] fcm topic | topic=%s ok=%s fail=%s", topic, success, failure);
+  logEvent("info", "fcm_topic_send", {
+    eventType: data.eventType,
+    topic,
+    success,
+    failure,
+  });
 }
 
 function resolveGenericTargets(body) {
@@ -256,8 +327,12 @@ async function handleBidRequestUpdate(body) {
   const recipientRaw = pick(body, "recipient");
 
   if (isRecipientAll(recipientRaw)) {
-    const targets = await resolveTargetsForClosedBidRequest(bidRequestId);
-    await sendToTargets(targets, body);
+    if (shouldUseDriverTopicBroadcast(body)) {
+      await sendToDriverTopic(body);
+    } else {
+      const targets = await resolveTargetsForClosedBidRequest(bidRequestId);
+      await sendToTargets(targets, body);
+    }
     return;
   }
 
@@ -298,7 +373,11 @@ export async function deliverDriverNotification(body, opts = {}) {
       const bidRequestId = pickBidRequestId(body);
       const devices = resolveGenericTargets(body);
       await recordPartnersEligibleForBidRequest(bidRequestId, devices);
-      await handleGeneric(body);
+      if (shouldUseDriverTopicBroadcast(body)) {
+        await sendToDriverTopic(body);
+      } else {
+        await handleGeneric(body);
+      }
       break;
     }
     case "bubbles.bidaccepted":
@@ -314,6 +393,10 @@ export async function deliverDriverNotification(body, opts = {}) {
 }
 
 async function handleGeneric(body) {
+  if (shouldUseDriverTopicBroadcast(body)) {
+    await sendToDriverTopic(body);
+    return;
+  }
   const eventType = normalizeEventType(body);
   const unique = resolveGenericTargets(body);
   console.info("[notify] generic event=%s targets=%s", eventType, JSON.stringify(unique));
