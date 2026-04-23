@@ -160,9 +160,109 @@ function resolveGenericTargets(body) {
   return [...new Set(targets.filter(Boolean))];
 }
 
+/** FCM `data` values must be strings; total payload should stay small (Android ~4KiB practical). */
+const FCM_JSON_BLOB_MAX_CHARS = 3200;
+
+function jsonStringForFcm(label, obj) {
+  if (obj === undefined || obj === null || typeof obj !== "object") return null;
+  try {
+    const s = JSON.stringify(obj);
+    if (s.length > FCM_JSON_BLOB_MAX_CHARS) {
+      console.warn(
+        "[notify] omit %s for FCM — JSON length %s exceeds cap %s (driver app should fetch details by bidRequestId)",
+        label,
+        s.length,
+        FCM_JSON_BLOB_MAX_CHARS
+      );
+      return null;
+    }
+    return s;
+  } catch (e) {
+    console.warn("[notify] skip %s for FCM — stringify failed | %s", label, e.message);
+    return null;
+  }
+}
+
+function pickItem(body) {
+  const item = body?.item ?? body?.data?.item;
+  if (item && typeof item === "object") return item;
+  return null;
+}
+
+/**
+ * Flatten bid-request `item` + distance into FCM `data` for driver UI (cards + submit-bid modal).
+ * Also sets `itemJson` / `metadataJson` when under size cap so the app can parse full structures.
+ *
+ * Keys the driver app may read (all string values):
+ * - Existing: eventType, bidId, bidRequestId, status, amount, tripId, itemId, invoiceId, partnerId, outcome, content
+ * - Bid UI: productName, productImage, quantity, quantityUnit, weightTonnes, pickupAddress, dropoffAddress,
+ *   distanceKm, timestamp, itemCost, itemMode
+ * - Blobs: itemJson (stringified item), metadataJson (stringified metadata, originalData dropped if still too large)
+ */
+function appendBidRequestFcmFields(body, data) {
+  const item = pickItem(body);
+  if (item) {
+    const itemJson = jsonStringForFcm("itemJson", item);
+    if (itemJson) data.itemJson = itemJson;
+
+    const product = item.product && typeof item.product === "object" ? item.product : null;
+    if (product?.name) data.productName = String(product.name);
+    if (product?.image) data.productImage = String(product.image);
+    else if (item.image) data.productImage = String(item.image);
+
+    if (item.quantity !== undefined && item.quantity !== null && item.quantity !== "") {
+      data.quantity = String(item.quantity);
+    }
+    const unit = item.quantity_unit ?? item.quantityUnit ?? item.unit ?? item.packaging;
+    if (unit !== undefined && unit !== null && unit !== "") {
+      data.quantityUnit = String(unit);
+    }
+
+    const weight =
+      item.weightTonnes ?? item.weight_tonnes ?? item.weight ?? item.weight_ton;
+    if (weight !== undefined && weight !== null && weight !== "") {
+      data.weightTonnes = String(weight);
+    }
+
+    const fromAddr = item.location?.from?.address;
+    const toAddr = item.location?.to?.address;
+    if (fromAddr) data.pickupAddress = String(fromAddr);
+    if (toAddr) data.dropoffAddress = String(toAddr);
+
+    if (item.cost !== undefined && item.cost !== null && item.cost !== "") {
+      data.itemCost = String(item.cost);
+    }
+    if (item.mode) data.itemMode = String(item.mode);
+
+    if (!data.itemId && item.id) data.itemId = String(item.id);
+    if (!data.invoiceId && item.invoice_id) data.invoiceId = String(item.invoice_id);
+    if (!data.invoiceId && item.invoiceId) data.invoiceId = String(item.invoiceId);
+  }
+
+  const dist = pick(body, "distanceKm") ?? pick(body, "distance_km");
+  if (dist !== undefined && dist !== null && dist !== "") {
+    data.distanceKm = String(dist);
+  }
+
+  const ts = pick(body, "timestamp") ?? body?.metadata?.notificationCreatedAt;
+  if (ts !== undefined && ts !== null && ts !== "") {
+    data.timestamp = String(ts);
+  }
+
+  if (body.metadata && typeof body.metadata === "object") {
+    let meta = body.metadata;
+    let metaJson = jsonStringForFcm("metadataJson", meta);
+    if (!metaJson && meta.originalData) {
+      meta = { ...meta, originalData: undefined };
+      metaJson = jsonStringForFcm("metadataJson", meta);
+    }
+    if (metaJson) data.metadataJson = metaJson;
+  }
+}
+
 /**
  * Data payload for FCM `data` map (string values only for FCM).
- * Extend as your Flutter app expects.
+ * Bid-create shapes: top-level `item`, `distanceKm`, `metadata` are flattened and/or JSON-stringified.
  */
 export function buildFcmData(body) {
   const eventType = normalizeEventType(body);
@@ -188,7 +288,15 @@ export function buildFcmData(body) {
   if (invoiceId) data.invoiceId = String(invoiceId);
   if (partnerId) data.partnerId = String(partnerId);
   if (outcome) data.outcome = String(outcome);
-  if (body.content) data.content = String(body.content);
+  const content = pick(body, "content");
+  if (content !== undefined && content !== null && String(content).trim() !== "") {
+    data.content = String(content);
+  }
+
+  if (isBidCreateEventType(eventType)) {
+    appendBidRequestFcmFields(body, data);
+  }
+
   return data;
 }
 
@@ -198,7 +306,9 @@ export function buildFcmData(body) {
  */
 export function buildFcmNotification(body) {
   const eventType = normalizeEventType(body);
-  const custom = typeof body.content === "string" && body.content.trim() ? body.content.trim() : null;
+  const rawContent = pick(body, "content");
+  const custom =
+    typeof rawContent === "string" && rawContent.trim() ? rawContent.trim() : null;
 
   if (eventType === "bubbles.bidaccepted") {
     const amt = pick(body, "amount") != null ? String(pick(body, "amount")) : "";
@@ -231,7 +341,7 @@ export function buildFcmNotification(body) {
   }
 
   if (isBidCreateEventType(eventType)) {
-    const name = body.item?.product?.name ?? body.data?.item?.product?.name;
+    const name = pickItem(body)?.product?.name;
     return {
       title: "New delivery request",
       body: custom ?? (name ? `New request: ${name}` : "You have a new bid request."),
